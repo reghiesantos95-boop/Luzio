@@ -4,7 +4,7 @@ const message=document.querySelector('#admin-message'),editor=document.querySele
 document.querySelector('#auth-panel').innerHTML='<h2 id="auth-title">Sign in</h2><form id="auth-form" class="form-grid"></form><div id="auth-actions" class="actions"></div>';
 const emailNotice=document.createElement('p');emailNotice.id='email-notice';emailNotice.setAttribute('role','status');message.after(emailNotice);
 const accountPanel=document.createElement('section');accountPanel.id='accounts-panel';accountPanel.className='admin-pane';accountPanel.setAttribute('role','tabpanel');accountPanel.setAttribute('aria-labelledby','tab-accounts');document.querySelector('#dashboard').append(accountPanel);
-async function api(route,method='GET',body){const response=await fetch('/api/'+route,{method,headers:{'Content-Type':'application/json'},...(body?{body:JSON.stringify(body)}:{})});const data=await response.json();if(!response.ok){if(response.status===401&&route!=='login')showAuth(false);throw Error(data.error||'Request failed.');}return data;}
+async function api(route,method='GET',body,requestOptions={}){const response=await fetch('/api/'+route,{method,headers:{'Content-Type':'application/json'},...(body?{body:JSON.stringify(body)}:{}),...requestOptions});const data=await response.json();if(!response.ok){if(response.status===401&&route!=='login')showAuth(false);throw Error(data.error||'Request failed.');}return data;}
 const emailField='<label>Email address<input name="email" type="email" autocomplete="email" required maxlength="254"></label>';
 const nameField='<label>Your name<input name="name" autocomplete="name" required minlength="2" maxlength="100"></label>';
 const passwordField=(fresh=false)=>`<label>${fresh?'New password (at least 12 characters)':'Password'}<input name="password" type="password" required minlength="${fresh?12:1}" maxlength="200" autocomplete="${fresh?'new-password':'current-password'}"></label>`;
@@ -105,14 +105,39 @@ function renderEditorPhotos(){
  box.querySelectorAll('[data-remove]').forEach(b=>b.onclick=()=>{editorPhotos.splice(Number(b.dataset.remove),1);renderEditorPhotos();});
  document.querySelector('#editor-photo').innerHTML=editorPhotos.length?'<img src="'+esc(editorPhotos[0])+'" alt="Selected cover photo">':'<div class="admin-photo-placeholder"><span>LG</span><small>NO COVER PHOTO</small></div>';
 }
+async function readUploadData(file){
+ const bytes=new Uint8Array(await file.slice(0,12).arrayBuffer());
+ const png=[137,80,78,71,13,10,26,10].every((n,i)=>bytes[i]===n),jpg=bytes[0]===255&&bytes[1]===216&&bytes[2]===255,webp=String.fromCharCode(...bytes.slice(0,4))==='RIFF'&&String.fromCharCode(...bytes.slice(8,12))==='WEBP';
+ const mime=png?'image/png':jpg?'image/jpeg':webp?'image/webp':null;
+ if(!mime)throw Error('Unsupported file. Use PNG, JPEG, or WebP; HEIC/HEIF must be converted first.');
+ const data=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(reader.result);reader.onerror=()=>reject(Error('Could not read this photo.'));reader.onabort=()=>reject(Error('Reading photo was cancelled.'));reader.readAsDataURL(file);});
+ return 'data:'+mime+';base64,'+String(data).split(',')[1];
+}
 document.querySelector('#motorcycle-photos').onchange=async e=>{
- const files=[...e.target.files],status=document.querySelector('#photo-upload-status'),generation=photoGeneration;
- if(editorPhotos.length+files.length>12){status.textContent='Use no more than 12 photos.';e.target.value='';return;}
- if(files.some(f=>!['image/png','image/jpeg','image/webp'].includes(f.type)||f.size>8*1024*1024)){status.textContent='Choose PNG, JPEG, or WebP photos, up to 8 MB each.';e.target.value='';return;}
- photosBusy=true;e.target.disabled=true;unitForm.querySelector('[type=submit]').disabled=true;renderEditorPhotos();
- try{for(let i=0;i<files.length;i++){status.textContent='Uploading photo '+(i+1)+' of '+files.length+'…';const data=await new Promise((resolve,reject)=>{const r=new FileReader();r.onload=()=>resolve(r.result);r.onerror=()=>reject(Error('Could not read photo.'));r.readAsDataURL(files[i]);});const result=await api('uploads','POST',{data});if(generation!==photoGeneration)return;editorPhotos.push(result.image);renderEditorPhotos();}status.textContent='Photos ready. Save the motorcycle to apply your cover and gallery order.';}
- catch(error){status.textContent=error.message;}
- finally{photosBusy=false;e.target.disabled=false;e.target.value='';unitForm.querySelector('[type=submit]').disabled=false;if(generation===photoGeneration)renderEditorPhotos();}
+ const input=e.target,files=[...input.files],status=document.querySelector('#photo-upload-status'),generation=photoGeneration;
+ if(!files.length)return;
+ photosBusy=true;input.disabled=true;unitForm.querySelector('[type=submit]').disabled=true;renderEditorPhotos();
+ let added=0;const errors=[];
+ try{
+  for(let i=0;i<files.length;i++){
+   const file=files[i];
+   if(generation!==photoGeneration)break;
+   if(editorPhotos.length>=12){errors.push(file.name+': gallery is full (12 photos maximum).');continue;}
+   if(file.size>8*1024*1024){errors.push(file.name+': '+(file.size/1024/1024).toFixed(1)+' MB; maximum is 8 MB per photo.');continue;}
+   if(!file.size){errors.push(file.name+': this file is empty.');continue;}
+   status.textContent='Uploading '+(i+1)+' / '+files.length+': '+file.name;
+   let timeout;
+   try{
+    const data=await readUploadData(file),controller=new AbortController();timeout=setTimeout(()=>controller.abort(),60000);
+    const result=await api('uploads','POST',{data},{signal:controller.signal});
+    if(generation!==photoGeneration)break;
+    editorPhotos.push(result.image);added++;renderEditorPhotos();
+   }catch(error){errors.push(file.name+': '+(error.name==='AbortError'?'Upload timed out. Check the server/connection and select this photo again.':error.message));}
+   finally{clearTimeout(timeout);}
+  }
+  status.textContent=(added?added+' photo'+(added===1?'':'s')+' uploaded. Save the motorcycle to apply changes.':'No photos uploaded.')+(errors.length?'\n'+errors.join('\n'):'');
+  if(errors.length)status.scrollIntoView({block:'nearest'});
+ }finally{photosBusy=false;input.disabled=false;input.value='';unitForm.querySelector('[type=submit]').disabled=false;if(generation===photoGeneration)renderEditorPhotos();}
 };
 editor.addEventListener('cancel',e=>{if(photosBusy)e.preventDefault();});
 const originalCloseEditor=editor.querySelector('.close-dialog').onclick;
