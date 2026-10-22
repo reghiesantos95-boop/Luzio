@@ -20,7 +20,7 @@ function createApi(directory, options={}){
   if(!attempts.has(key))attempts.set(key,{count:0,expires:now+900000});
   if(++attempts.get(key).count>max)fail('Too many attempts. Try again in 15 minutes.',429);
  }
- const accounts=require('./accounts.cjs').createAccounts(db,{reply,fail,limit,setupCode,mail:options.mail||require('./mail.cjs'),localAuthTesting:options.localAuthTesting??(process.env.LOCAL_AUTH_TEST==='true')});
+ const accounts=require('./accounts.cjs').createAccounts(db,{reply,fail,limit,setupCode,mail:options.mail||require('./mail.cjs'),localAuthTesting:options.localAuthTesting??(process.env.LOCAL_AUTH_TEST===undefined?process.env.NODE_ENV!=='production':process.env.LOCAL_AUTH_TEST==='true')});
  const conversations=require('./conversations.cjs').createConversations(db,{fail,reply,limit});
  const backups=require('./backup.cjs').createBackups(db,directory);
  const api=async(req,res,route)=>{

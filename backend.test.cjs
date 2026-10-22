@@ -244,3 +244,19 @@ test('compression resizes and strips metadata; verified backups restore photos a
   fs.appendFileSync(photo,'tamper');assert.throws(()=>verifyBackup(folder),/verification failed/);
  }finally{h.close();}
 });
+
+test('fresh clone defaults to local testing without .env; production and explicit opt-out stay strict',async()=>{
+ const directory=fs.mkdtempSync(path.join(os.tmpdir(),'luzio-test-')),oldMode=process.env.NODE_ENV,oldFlag=process.env.LOCAL_AUTH_TEST;
+ let api;
+ async function request(route,body){const req=Readable.from(body?[JSON.stringify(body)]:[]);Object.assign(req,{method:body?'POST':'GET',headers:{host:'localhost:4174','content-type':'application/json'},socket:{remoteAddress:'127.0.0.1'}});const res={setHeader(){},writeHead(status){this.status=status;},end(raw){this.data=JSON.parse(raw);}};await api(req,res,'/api/'+route);return res;}
+ try{
+  delete process.env.NODE_ENV;delete process.env.LOCAL_AUTH_TEST;
+  api=createApi(directory,{mail:{configured:()=>false,send:async()=>{throw Error('Email must not be used');}}});
+  assert.equal((await request('session')).data.localTesting,true);
+  assert.equal((await request('setup',{code:api.setupCode,name:'Fresh Owner',email:'fresh@example.test',password:'Fresh clone password'})).status,201);
+  assert.equal((await request('register',{name:'Fresh Customer',email:'customer@example.test',password:'Fresh clone password',consent:true})).status,201);
+  api.close();process.env.LOCAL_AUTH_TEST='false';api=createApi(directory,{mail:{configured:()=>false}});assert.equal((await request('session')).data.localTesting,false);api.close();
+  process.env.LOCAL_AUTH_TEST='true';process.env.NODE_ENV='production';api=createApi(directory,{mail:{configured:()=>false}});assert.equal((await request('session')).data.localTesting,false);
+  assert.equal((await request('register',{name:'Production Customer',email:'production@example.test',password:'Fresh clone password',consent:true})).status,503);
+ }finally{api?.close();if(oldMode===undefined)delete process.env.NODE_ENV;else process.env.NODE_ENV=oldMode;if(oldFlag===undefined)delete process.env.LOCAL_AUTH_TEST;else process.env.LOCAL_AUTH_TEST=oldFlag;assert.equal(path.dirname(path.resolve(directory)),path.resolve(os.tmpdir()));assert.ok(path.basename(directory).startsWith('luzio-test-'));fs.rmSync(directory,{recursive:true,force:true});}
+});

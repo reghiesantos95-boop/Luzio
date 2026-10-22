@@ -64,3 +64,7 @@ Signed-in customers and the garage team can reply inside inquiry conversations. 
 The server creates an integrity-checked backup on first start and whenever the most recent backup is older than 24 hours. This runs while the server is open and catches up after a restart. Admins can also use Back Up Now. Snapshots are in data/backups/snapshot-*, with SQLite, uploads, static assets, and a SHA-256 manifest. Existing snapshots are retained. Copy this folder to another private drive regularly.
 
 To restore, stop the server, keep a copy of the current data folder, copy snapshot luzio.sqlite into data (remove old WAL/SHM only after shutdown), restore snapshot uploads into data/uploads and assets into project assets, then restart. Never expose backups through a public static host.
+
+## Fresh-clone local testing
+
+Run npm install, then npm run dev. On localhost, non-production runs default to email-free registration and admin setup when LOCAL_AUTH_TEST is unset. No .env is needed for local testing. Use the admin setup code printed in the terminal at /admin. Setting LOCAL_AUTH_TEST=false explicitly restores email verification. NODE_ENV=production always disables the bypass, even if LOCAL_AUTH_TEST=true. SMTP remains required for password reset emails and invitations.
