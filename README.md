@@ -68,3 +68,5 @@ To restore, stop the server, keep a copy of the current data folder, copy snapsh
 ## Fresh-clone local testing
 
 Run npm install, then npm run dev. On localhost, non-production runs default to email-free registration and admin setup when LOCAL_AUTH_TEST is unset. No .env is needed for local testing. Use the admin setup code printed in the terminal at /admin. Setting LOCAL_AUTH_TEST=false explicitly restores email verification. NODE_ENV=production always disables the bypass, even if LOCAL_AUTH_TEST=true. SMTP remains required for password reset emails and invitations.
+
+Camera photo uploads support up to 120 megapixels before resizing to 1920 pixels. The 8 MB per-file upload limit is unchanged. Decoder errors are reported separately from the pixel limit.

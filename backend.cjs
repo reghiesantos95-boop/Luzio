@@ -58,7 +58,7 @@ function createApi(directory, options={}){
     if(bytes.length>8*1024*1024)fail('Each photo must be 8 MB or smaller.',413);
     const png=bytes.subarray(0,8).equals(Buffer.from([137,80,78,71,13,10,26,10])),jpg=bytes[0]===255&&bytes[1]===216&&bytes[2]===255,webp=bytes.subarray(0,4).toString()==='RIFF'&&bytes.subarray(8,12).toString()==='WEBP';
     if(!(match[1]==='png'&&png||match[1]==='jpeg'&&jpg||match[1]==='webp'&&webp))fail('The file is not a supported image.');
-    let optimized;try{optimized=await require('./compress.cjs').compressImage(bytes);}catch{fail('Could not process this photo. Use a valid image under 40 megapixels.');}
+    let optimized;try{optimized=await require('./compress.cjs').compressImage(bytes);}catch(error){fail(error.code==='IMAGE_TOO_LARGE'?error.message:'This photo could not be decoded. Export it again as PNG, JPEG, or WebP and retry.');}
     const filename=randomBytes(16).toString('hex')+'.webp';
     fs.mkdirSync(path.join(directory,'uploads'),{recursive:true});fs.writeFileSync(path.join(directory,'uploads',filename),optimized,{flag:'wx'});
     return reply(res,201,{image:'uploads/'+filename,originalBytes:bytes.length,bytes:optimized.length});

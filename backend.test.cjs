@@ -260,3 +260,12 @@ test('fresh clone defaults to local testing without .env; production and explici
   assert.equal((await request('register',{name:'Production Customer',email:'production@example.test',password:'Fresh clone password',consent:true})).status,503);
  }finally{api?.close();if(oldMode===undefined)delete process.env.NODE_ENV;else process.env.NODE_ENV=oldMode;if(oldFlag===undefined)delete process.env.LOCAL_AUTH_TEST;else process.env.LOCAL_AUTH_TEST=oldFlag;assert.equal(path.dirname(path.resolve(directory)),path.resolve(os.tmpdir()));assert.ok(path.basename(directory).startsWith('luzio-test-'));fs.rmSync(directory,{recursive:true,force:true});}
 });
+
+test('48 MP camera photos resize successfully and decoder errors are distinct from pixel limits',async()=>{
+ const sharp=require('sharp'),{compressImage,MAX_INPUT_PIXELS}=require('./compress.cjs');
+ assert.equal(MAX_INPUT_PIXELS,120000000);
+ const source=await sharp({create:{width:8000,height:6000,channels:3,background:'#c52320'}}).jpeg({quality:75}).toBuffer();
+ const compressed=await compressImage(source),metadata=await sharp(compressed).metadata();
+ assert.equal(metadata.width,1920);assert.equal(metadata.height,1440);assert.equal(metadata.format,'webp');
+ await assert.rejects(()=>compressImage(Buffer.from('invalid image bytes')),e=>e.code==='IMAGE_DECODE_FAILED'&&!e.message.includes('megapixels'));
+});
