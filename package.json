@@ -5,10 +5,14 @@
   "scripts": {
     "start": "node server.cjs",
     "dev": "node server.cjs",
-    "check": "node --check server.cjs && node --check backend.cjs && node --check app.js && node --check features.js && node --check admin.js",
+    "check": "node --check server.cjs && node --check backend.cjs && node --check app.js && node --check features.js && node --check admin.js && node --check accounts.cjs && node --check mail.cjs && node --check account.js && node --check conversations.cjs && node --check conversation-ui.js && node --check backup.cjs && node --check compress.cjs",
     "test": "node --test backend.test.cjs"
   },
   "engines": {
     "node": ">=24"
+  },
+  "dependencies": {
+    "nodemailer": "^10.1.2",
+    "sharp": "^0.35.5"
   }
 }
