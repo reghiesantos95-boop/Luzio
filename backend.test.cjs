@@ -4,15 +4,15 @@ const fs=require('node:fs'),os=require('node:os'),path=require('node:path');
 const {DatabaseSync}=require('node:sqlite');
 const {scryptSync}=require('node:crypto');
 const {createApi}=require('./backend.cjs');
-function harness(configured=true, deliveryFailure=false, localAuthTesting=false){
+function harness(configured=true, deliveryFailure=false, localAuthTesting=false,extraOptions={}){
  const directory=fs.mkdtempSync(path.join(os.tmpdir(),'luzio-test-')),sent=[];
- let api=createApi(directory,{localAuthTesting,mail:{configured:()=>configured,send:async(email,token,purpose)=>{if(deliveryFailure)throw Error('SMTP unavailable');sent.push({email,token,purpose});}}}),cookie='';
+ let api=createApi(directory,{...extraOptions,localAuthTesting,mail:{configured:()=>configured,send:async(email,token,purpose)=>{if(deliveryFailure)throw Error('SMTP unavailable');sent.push({email,token,purpose});}}}),cookie='';
  async function request(route,method='GET',body,headers={}){
   const req=Readable.from(body===undefined?[]:[JSON.stringify(body)]);Object.assign(req,{method,headers:{host:'localhost','content-type':'application/json',cookie,...headers},socket:{remoteAddress:'127.0.0.1'}});
   const res={headers:{},setHeader(k,v){this.headers[k]=v;},writeHead(status,h){this.status=status;Object.assign(this.headers,h);},end(data){this.data=JSON.parse(data);}};
   await api(req,res,'/api/'+route);return res;
  }
- return {directory,sent,request,get api(){return api;},get cookie(){return cookie;},set cookie(v){cookie=v;},async login(email,password){const r=await request('login','POST',{email,password});if(r.status===200)cookie=r.headers['Set-Cookie'].split(';')[0];return r;},restart(){api.close();api=createApi(directory,{localAuthTesting,mail:{configured:()=>configured,send:async(email,token,purpose)=>sent.push({email,token,purpose})}});},close(){api.close();assert.equal(path.dirname(path.resolve(directory)),path.resolve(os.tmpdir()));assert.ok(path.basename(directory).startsWith('luzio-test-'));fs.rmSync(directory,{recursive:true,force:true});}};
+ return {directory,sent,request,get api(){return api;},get cookie(){return cookie;},set cookie(v){cookie=v;},async login(email,password){const r=await request('login','POST',{email,password});if(r.status===200)cookie=r.headers['Set-Cookie'].split(';')[0];return r;},restart(){api.close();api=createApi(directory,{...extraOptions,localAuthTesting,mail:{configured:()=>configured,send:async(email,token,purpose)=>sent.push({email,token,purpose})}});},close(){api.close();assert.equal(path.dirname(path.resolve(directory)),path.resolve(os.tmpdir()));assert.ok(path.basename(directory).startsWith('luzio-test-'));fs.rmSync(directory,{recursive:true,force:true});}};
 }
 test('email setup, verification, role boundaries, invitations, resets, inventory and persistence',async()=>{
  const h=harness(),r=h.request,password='Long password for testing';
@@ -35,7 +35,7 @@ test('email setup, verification, role boundaries, invitations, resets, inventory
   assert.equal((await r('verify','POST',{token:verification.token})).status,200);
   assert.equal((await r('verify','POST',{token:verification.token})).status,400);
   const ownerCookie=h.cookie;
-  const bike={name:'Test Motorcycle',brand:'Test',type:'Naked',year:2024,price:150000,mileage:1000,status:'available',description:'Test only'};
+  const bike={name:'Test Motorcycle',brand:'Test',type:'Naked',year:2024,price:150000,mileage:1000,publication:'published',status:'available',description:'Test only'};
   assert.equal((await r('bikes','POST',bike,{origin:'https://other.example'})).status,403);
   assert.equal((await r('bikes','POST',{...bike,price:-1})).status,400);
   const added=await r('bikes','POST',bike);assert.equal(added.status,201);const id=added.data.id;
@@ -116,7 +116,7 @@ test('customers register without privilege escalation and see only their own inq
  try{
   await r('setup','POST',{code:h.api.setupCode,name:'Owner',email:'owner@example.test',password});
   await r('verify','POST',{token:h.sent.at(-1).token});await h.login('owner@example.test',password);const ownerCookie=h.cookie;
-  const bike={name:'Customer Test Unit',brand:'Honda',type:'Scooter',year:2024,price:100000,mileage:100,status:'available',description:'Test'};
+  const bike={name:'Customer Test Unit',brand:'Honda',type:'Scooter',year:2024,price:100000,mileage:100,publication:'published',status:'available',description:'Test'};
   const bikeId=(await r('bikes','POST',bike)).data.id;
   h.cookie='';assert.equal((await r('my-inquiries')).status,401);
   const register={name:'Customer One',email:'customer1@example.test',password,consent:true,role:'admin'};
@@ -191,7 +191,7 @@ test('photo uploads require team access and gallery cover/order persist',async()
   await r('setup','POST',{code:h.api.setupCode,name:'Owner',email:'photos@example.test',password});await r('verify','POST',{token:h.sent.at(-1).token});await h.login('photos@example.test',password);
   assert.equal((await r('uploads','POST',{data:'data:image/png;base64,SGVsbG8='})).status,400);
   const first=await r('uploads','POST',{data}),second=await r('uploads','POST',{data});assert.equal(first.status,201);assert.equal(second.status,201);
-  const bike={name:'Photo Test',brand:'Ducati',type:'Sport',year:null,mileage:null,price:1695000,status:'available',images:[second.data.image,first.data.image]};
+  const bike={name:'Photo Test',brand:'Ducati',type:'Sport',year:null,mileage:null,price:1695000,publication:'published',status:'available',images:[second.data.image,first.data.image]};
   const saved=await r('bikes','POST',bike);assert.equal(saved.status,201);assert.equal(saved.data.image,second.data.image);assert.deepEqual(saved.data.images,bike.images);
   const id=saved.data.id;assert.equal((await r('bikes/'+id,'PUT',{...bike,images:['uploads/../../secrets.png']})).status,400);
   assert.equal((await r('bikes/'+id,'PUT',{...bike,images:[first.data.image,first.data.image]})).status,400);
@@ -236,7 +236,7 @@ test('compression resizes and strips metadata; verified backups restore photos a
  try{
   await r('setup','POST',{code:h.api.setupCode,name:'Owner',email:'owner@example.test',password});await h.login('owner@example.test',password);
   const uploaded=await r('uploads','POST',{data:'data:image/jpeg;base64,'+source.toString('base64')});assert.equal(uploaded.status,201);assert.ok(uploaded.data.bytes<uploaded.data.originalBytes);
-  const bike={name:'Backup Test',brand:'Ducati',type:'Sport',price:100,year:null,mileage:null,status:'available',images:[uploaded.data.image]};await r('bikes','POST',bike);
+  const bike={name:'Backup Test',brand:'Ducati',type:'Sport',price:100,year:null,mileage:null,publication:'published',status:'available',images:[uploaded.data.image]};await r('bikes','POST',bike);
   const saved=await r('backups','POST',{});assert.equal(saved.status,201);assert.equal(saved.data.count,1);
   const folder=path.join(h.directory,'backups',saved.data.last.name),manifest=verifyBackup(folder);assert.ok(manifest.files.some(f=>f.path===uploaded.data.image));assert.ok(manifest.files.some(f=>f.path.startsWith('assets/')));
   const restored=new DatabaseSync(path.join(folder,'luzio.sqlite'),{readOnly:true});assert.equal(JSON.parse(restored.prepare('SELECT data FROM bikes').get().data).name,'Backup Test');assert.equal(restored.prepare('PRAGMA integrity_check').get().integrity_check,'ok');restored.close();
@@ -268,4 +268,40 @@ test('48 MP camera photos resize successfully and decoder errors are distinct fr
  const compressed=await compressImage(source),metadata=await sharp(compressed).metadata();
  assert.equal(metadata.width,1920);assert.equal(metadata.height,1440);assert.equal(metadata.format,'webp');
  await assert.rejects(()=>compressImage(Buffer.from('invalid image bytes')),e=>e.code==='IMAGE_DECODE_FAILED'&&!e.message.includes('megapixels'));
+});
+
+test('drafts stay private, legacy listings stay published, and specification edits are audited',async()=>{
+ const h=harness(false,false,true),r=h.request,password='Listing workflow password';
+ try{
+  await r('setup','POST',{code:h.api.setupCode,name:'Owner',email:'owner@example.test',password});await h.login('owner@example.test',password);const owner=h.cookie;
+  const input={name:'Draft Ducati',brand:'Ducati',type:'Sport',price:1695000,year:null,mileage:null,status:'available',engineCc:1103,transmission:'Manual',papers:'Original documents available',ownership:'One previous owner',modifications:'Aftermarket exhaust'};
+  const draft=await r('bikes','POST',input);assert.equal(draft.status,201);assert.equal(draft.data.publication,'draft');const id=draft.data.id;
+  assert.equal((await r('bikes')).data.length,0);assert.equal((await r('admin/bikes')).data.length,1);
+  h.cookie='';assert.equal((await r('admin/bikes')).status,401);assert.equal((await r('activity')).status,401);
+  assert.equal((await r('inquiries','POST',{name:'Customer',phone:'09273046604',kind:'unit',bikeId:id,message:'I guessed a draft id'})).status,400);
+  await r('register','POST',{name:'Customer',email:'customer@example.test',password,consent:true});await h.login('customer@example.test',password);assert.equal((await r('admin/bikes')).status,403);assert.equal((await r('activity')).status,403);
+  h.cookie=owner;const published=await r('bikes/'+id,'PUT',{...input,publication:'published'});assert.equal(published.status,200);
+  const publicBike=(await r('bikes')).data[0];assert.equal(publicBike.engineCc,1103);assert.equal(publicBike.modifications,'Aftermarket exhaust');
+  const history=(await r('activity')).data;assert.equal(history.length,2);assert.equal(history[0].action,'published');assert.equal(history[0].actor_name,'Owner');assert.deepEqual(history[0].changes.publication,{before:'draft',after:'published'});
+  await r('bikes/'+id,'PUT',{...input,publication:'published'});assert.equal((await r('activity')).data.length,2);
+  await r('bikes/'+id,'PUT',{...input,price:1600000,publication:'published'});const edit=(await r('activity')).data[0];assert.deepEqual(edit.changes.price,{before:1695000,after:1600000});assert.equal(edit.action,'updated');
+  assert.equal((await r('bikes/'+id,'PUT',{...input,engineCc:-1,publication:'published'})).status,400);assert.equal((await r('activity')).data.length,3);
+  await r('bikes/'+id,'PUT',{...input,publication:'draft'});assert.equal((await r('bikes')).data.length,0);assert.equal((await r('activity')).data[0].action,'unpublished');
+  const db=new DatabaseSync(path.join(h.directory,'luzio.sqlite'));db.prepare('INSERT INTO bikes(data) VALUES(?)').run(JSON.stringify({name:'Legacy Unit',status:'available'}));db.close();h.restart();assert.equal((await r('bikes')).data[0].name,'Legacy Unit');assert.equal((await r('bikes')).data[0].publication,'published');
+ }finally{h.close();}
+});
+
+test('missing image processor is reported as a server setup issue, not a corrupt photo',async()=>{
+ const {createImageProcessor}=require('./compress.cjs');
+ const processor=createImageProcessor(()=>{throw Object.assign(new Error("Cannot find module 'sharp'"),{code:'MODULE_NOT_FOUND'});});
+ await assert.rejects(()=>processor.compressImage(Buffer.from('photo')),e=>e.code==='IMAGE_PROCESSOR_UNAVAILABLE');
+ const h=harness(false,false,true,{imageProcessor:processor}),r=h.request,password='Upload diagnostics password';
+ try{
+  assert.equal((await r('upload-health')).status,401);
+  await r('setup','POST',{code:h.api.setupCode,name:'Owner',email:'owner@example.test',password});await h.login('owner@example.test',password);
+  const health=await r('upload-health');assert.equal(health.status,503);assert.equal(health.data.code,'IMAGE_PROCESSOR_UNAVAILABLE');assert.match(health.data.error,/npm ci/);
+  const upload=await r('uploads','POST',{data:'data:image/png;base64,iVBORw0KGgo='});assert.equal(upload.status,503);assert.equal(upload.data.code,'IMAGE_PROCESSOR_UNAVAILABLE');assert.ok(upload.data.reference);assert.ok(!upload.data.error.includes('could not be decoded'));
+  await r('register','POST',{name:'Customer',email:'customer@example.test',password,consent:true});await h.login('customer@example.test',password);assert.equal((await r('upload-health')).status,403);
+ }finally{h.close();}
+ const healthy=await require('./compress.cjs').healthCheck();assert.equal(healthy.ok,true);assert.equal(healthy.diagnosticsVersion,2);
 });
