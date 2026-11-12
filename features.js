@@ -59,9 +59,31 @@
   catch(error){result.textContent='Could not send: '+(location.protocol==='file:'?'Start the local server with npm start, then open http://127.0.0.1:4174.':error.message);}
   finally{button.disabled=false;}
  };
+ let showcaseTimer;
+ function renderHomeShowcase(){
+  clearInterval(showcaseTimer);
+  const units=bikes.filter(b=>b.publication!=='draft'&&b.status!=='sold'&&/^(?:assets\/[a-z0-9-]+|uploads\/[a-f0-9]{32})\.(png|jpg|webp)$/.test(b.image||'')).slice(0,8);
+  if(!units.length)return;
+  const art=document.querySelector('.hero-art');art.classList.add('home-showcase');art.setAttribute('role','region');art.setAttribute('aria-roledescription','carousel');art.setAttribute('aria-label','Motorcycles in the garage');
+  art.innerHTML='<div class="home-showcase-top"><span>IN THE GARAGE</span><span class="home-showcase-counter">01 / '+String(units.length).padStart(2,'0')+'</span></div>'+units.map((b,index)=>`<article class="home-motor-slide" role="group" aria-roledescription="slide" aria-label="${index+1} of ${units.length}: ${esc(b.name)}" ${index?'hidden':''}><img src="${esc(b.image)}" alt="${esc(b.name)}" loading="${index?'lazy':'eager'}"><div class="home-motor-caption"><div class="home-motor-brand"><span>${esc(b.brand)} / ${esc(b.type)}</span><span class="showroom-status" data-status="${esc(b.status)}"><i></i>${esc(b.status)}</span></div><h2>${esc(b.name)}</h2><div class="home-motor-bottom"><strong>${money(b.price)}</strong><button class="home-unit-link" data-showcase-unit="${b.id}">VIEW MOTORCYCLE <span>↗</span></button></div></div></article>`).join('')+(units.length>1?'<div class="home-showcase-controls"><div class="home-showcase-arrows"><button type="button" data-showcase-step="-1" aria-label="Previous motorcycle">←</button><button type="button" data-showcase-step="1" aria-label="Next motorcycle">→</button></div><div class="home-showcase-dots">'+units.map((b,index)=>'<button type="button" data-showcase-index="'+index+'" aria-label="Show '+esc(b.name)+'" '+(!index?'aria-current="true"':'')+'><span></span></button>').join('')+'</div><button type="button" class="home-showcase-pause" aria-label="Pause motorcycle slideshow">PAUSE Ⅱ</button></div>':'');
+  let selected=0,hovered=false;const reduced=matchMedia('(prefers-reduced-motion: reduce)');let paused=reduced.matches;
+  const slides=[...art.querySelectorAll('.home-motor-slide')],dots=[...art.querySelectorAll('[data-showcase-index]')],pause=art.querySelector('.home-showcase-pause');
+  function updatePause(){if(!pause)return;pause.textContent=paused?'PLAY ▷':'PAUSE Ⅱ';pause.setAttribute('aria-label',(paused?'Play':'Pause')+' motorcycle slideshow');}
+  function select(index){selected=(index+units.length)%units.length;slides.forEach((slide,i)=>slide.hidden=i!==selected);dots.forEach((dot,i)=>{if(i===selected)dot.setAttribute('aria-current','true');else dot.removeAttribute('aria-current');});art.querySelector('.home-showcase-counter').textContent=String(selected+1).padStart(2,'0')+' / '+String(units.length).padStart(2,'0');}
+  art.querySelectorAll('[data-showcase-unit]').forEach(button=>button.onclick=()=>{paused=true;updatePause();showUnit(units.find(b=>b.id===Number(button.dataset.showcaseUnit)));});
+  art.querySelectorAll('[data-showcase-step]').forEach(button=>button.onclick=()=>select(selected+Number(button.dataset.showcaseStep)));
+  dots.forEach(button=>button.onclick=()=>select(Number(button.dataset.showcaseIndex)));
+  art.addEventListener('pointerenter',()=>hovered=true);art.addEventListener('pointerleave',()=>hovered=false);
+  art.addEventListener('focusin',()=>{paused=true;updatePause();});
+  if(pause)pause.onclick=()=>{paused=!paused;updatePause();};
+  reduced.addEventListener('change',()=>{if(reduced.matches){paused=true;updatePause();}});
+  updatePause();
+  if(units.length>1)showcaseTimer=setInterval(()=>{if(!paused&&!hovered&&!document.hidden&&!document.querySelector('#home').hidden&&!document.querySelector('dialog[open]'))select(selected+1);},6000);
+ }
+
  async function load(){
   const grid=document.querySelector('#unit-grid');grid.textContent='Loading inventory…';
-  try{if(location.protocol==='file:')throw Error('For live inventory and forms, run npm start and open http://127.0.0.1:4174.');const response=await fetch('/api/bikes');if(!response.ok)throw Error('Inventory unavailable.');bikes=await response.json();
+  try{if(location.protocol==='file:')throw Error('For live inventory and forms, run npm start and open http://127.0.0.1:4174.');const response=await fetch('/api/bikes');if(!response.ok)throw Error('Inventory unavailable.');bikes=await response.json();renderHomeShowcase();
    document.querySelector('#brand-filter').innerHTML='<option value="">All brands</option>'+[...new Set(bikes.map(b=>b.brand))].sort().map(b=>`<option>${esc(b)}</option>`).join('');
    form.elements.bikeId.innerHTML='<option value="">No specific unit</option>'+bikes.filter(b=>b.status==='available').map(b=>`<option value="${b.id}">${esc(b.name)}${b.year?' ('+b.year+')':''}</option>`).join('');render();
   }catch(error){grid.innerHTML=`<div class="empty-state"><h3>Connect to the garage.</h3><p>${esc(error.message)}</p><button class="button" id="retry-inventory">RETRY</button></div>`;document.querySelector('#retry-inventory').onclick=load;}
