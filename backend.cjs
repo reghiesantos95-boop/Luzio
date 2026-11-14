@@ -40,18 +40,33 @@ function createApi(directory, options={}){
    const authenticated=!!account && !!account.verified;
    if(await conversations.handle(req,res,route,body,account))return;
    if(route==='/api/backups'){if(!authenticated)fail('Please log in.',401);if(account.role!=='admin')fail('Only admins can manage backups.',403);if(req.method==='GET')return reply(res,200,backups.status());if(req.method==='POST'){limit(req,'manual-backup',5);await backups.run();return reply(res,201,backups.status());}}
-   if(route==='/api/bikes'&&req.method==='GET')return reply(res,200,db.prepare("SELECT * FROM bikes WHERE COALESCE(json_extract(data,'$.publication'),'published')='published' ORDER BY id DESC").all().map(r=>({...JSON.parse(r.data),publication:JSON.parse(r.data).publication||'published',id:r.id})));
+   if(route==='/api/bikes'&&req.method==='GET')return reply(res,200,db.prepare("SELECT * FROM bikes WHERE COALESCE(json_extract(data,'$.publication'),'published')='published' AND json_extract(data,'$.deletedAt') IS NULL ORDER BY id DESC").all().map(r=>({...JSON.parse(r.data),publication:JSON.parse(r.data).publication||'published',id:r.id})));
    if(route==='/api/inquiries'&&req.method==='POST'){
     limit(req,'inquiry',20);const name=text(body.name,100),phone=text(body.phone,30),message=text(body.message,2000),kind=text(body.kind,30);
     if(name.length<2||!/^[+\d ()-]{7,30}$/.test(phone)||message.length<5||!['general','unit','financing'].includes(kind))fail('Enter your name, valid phone number, and a message of at least 5 characters.');
-    let bikeId=null;if(body.bikeId!=null&&body.bikeId!==''){bikeId=Number(body.bikeId);if(!Number.isSafeInteger(bikeId)||!db.prepare("SELECT id FROM bikes WHERE id=? AND COALESCE(json_extract(data,'$.publication'),'published')='published'").get(bikeId))fail('This unit is no longer listed. Refresh and try again.');}
+    let bikeId=null;if(body.bikeId!=null&&body.bikeId!==''){bikeId=Number(body.bikeId);if(!Number.isSafeInteger(bikeId)||!db.prepare("SELECT id FROM bikes WHERE id=? AND COALESCE(json_extract(data,'$.publication'),'published')='published' AND json_extract(data,'$.deletedAt') IS NULL").get(bikeId))fail('This unit is no longer listed. Refresh and try again.');}
     if(account&&!account.verified)fail('Verify your email before submitting an inquiry while signed in.',403);
     const result=db.prepare('INSERT INTO inquiries(data,owner_id) VALUES(?,?)').run(JSON.stringify({name,phone,message,kind,bikeId}),authenticated?account.id:null);conversations.initial(Number(result.lastInsertRowid),authenticated?account.id:null,message);return reply(res,201,{id:Number(result.lastInsertRowid)});
    }
    if(!authenticated)fail('Please log in.',401);
    if(route==='/api/my-inquiries'&&req.method==='GET')return reply(res,200,db.prepare("SELECT i.*,b.data AS bike_data FROM inquiries i LEFT JOIN bikes b ON b.id=json_extract(i.data,'$.bikeId') WHERE i.owner_id=? ORDER BY i.id DESC").all(account.id).map(r=>({...JSON.parse(r.data),id:r.id,status:r.status,created:r.created,unread:conversations.unread(r.id,account),bikeName:r.bike_data?JSON.parse(r.bike_data).name:null})));
    if(!['admin','staff'].includes(account.role))fail('Garage team access required.',403);
-   if(route==='/api/admin/bikes'&&req.method==='GET')return reply(res,200,db.prepare('SELECT * FROM bikes ORDER BY id DESC').all().map(r=>({...JSON.parse(r.data),publication:JSON.parse(r.data).publication||'published',id:r.id})));
+   if(route==='/api/admin/bikes'&&req.method==='GET')return reply(res,200,db.prepare("SELECT * FROM bikes WHERE json_extract(data,'$.deletedAt') IS NULL ORDER BY id DESC").all().map(r=>({...JSON.parse(r.data),publication:JSON.parse(r.data).publication||'published',id:r.id})));
+   if(route==='/api/admin/deleted-bikes'&&req.method==='GET'){
+    if(account.role!=='admin')fail('Only admins can manage deleted units.',403);
+    return reply(res,200,db.prepare("SELECT * FROM bikes WHERE json_extract(data,'$.deletedAt') IS NOT NULL ORDER BY id DESC").all().map(r=>({...JSON.parse(r.data),id:r.id})));
+   }
+   const removal=/^\/api\/bikes\/(\d+)(\/restore)?$/.exec(route);
+   if(removal&&((req.method==='DELETE'&&!removal[2])||(req.method==='POST'&&removal[2]))){
+    if(account.role!=='admin')fail('Only admins can delete or restore motorcycles.',403);
+    const id=Number(removal[1]),row=db.prepare('SELECT data FROM bikes WHERE id=?').get(id);if(!row)fail('Unit not found.',404);
+    const bike=JSON.parse(row.data),restore=!!removal[2];
+    if(restore&&!bike.deletedAt||!restore&&bike.deletedAt)fail(restore?'This unit is not deleted.':'Unit already deleted.',409);
+    if(!restore&&body.confirmName!==bike.name)fail('Confirm the motorcycle name before deleting.');
+    const before=bike.deletedAt||null;if(restore){delete bike.deletedAt;delete bike.deletedBy;}else{bike.deletedAt=new Date().toISOString();bike.deletedBy=account.id;}
+    db.exec('BEGIN IMMEDIATE');try{db.prepare('UPDATE bikes SET data=? WHERE id=?').run(JSON.stringify(bike),id);db.prepare('INSERT INTO activity_log(actor_id,actor_name,bike_id,unit_name,action,changes) VALUES(?,?,?,?,?,?)').run(account.id,account.name,id,bike.name,restore?'restored':'deleted',JSON.stringify({deletedAt:{before,after:bike.deletedAt||null}}));db.exec('COMMIT');}catch(error){db.exec('ROLLBACK');throw error;}
+    return reply(res,200,{ok:true,id,name:bike.name});
+   }
    if(route==='/api/activity'&&req.method==='GET')return reply(res,200,db.prepare('SELECT * FROM activity_log ORDER BY id DESC LIMIT 100').all().map(r=>({...r,changes:JSON.parse(r.changes)})));
    if(route==='/api/upload-health'&&req.method==='GET'){
     try{return reply(res,200,await imageProcessor.healthCheck());}catch(error){console.error('Upload processor health check:',error.code,(error.cause?.message||error.message).slice(0,500));return reply(res,503,{error:error.message,code:error.code});}
@@ -83,7 +98,7 @@ function createApi(directory, options={}){
     const bike={name:text(body.name,100),brand:text(body.brand,60),type:text(body.type,60),year:number('year',1900,new Date().getFullYear()+1),price:number('price',0,100000000),mileage:number('mileage',0,10000000),status:text(body.status,20),description:text(body.description,3000)};
     if(!bike.name||!bike.brand||!bike.type||(bike.year!==null&&!Number.isInteger(bike.year))||!['available','reserved','sold'].includes(bike.status))fail('Complete all unit details.');
     const existing=req.method==='PUT'?db.prepare('SELECT data FROM bikes WHERE id=?').get(Number(route.split('/').pop())):null;
-    const prior=existing?JSON.parse(existing.data):{};
+    const prior=existing?JSON.parse(existing.data):{};if(prior.deletedAt)fail('Restore this unit before editing.',409);
     bike.publication=body.publication===undefined?(existing?prior.publication||'published':'draft'):body.publication;
     if(!['draft','published'].includes(bike.publication))fail('Choose Draft or Published.');
     for(const [key,max] of [['transmission',80],['papers',1000],['ownership',1000],['modifications',2000]])bike[key]=body[key]===undefined?(prior[key]||''):text(body[key],max);

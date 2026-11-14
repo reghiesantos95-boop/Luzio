@@ -80,3 +80,7 @@ New listings default to Draft. Select Published in the motorcycle editor to show
 Use Check Upload Service in the motorcycle editor. IMAGE_PROCESSOR_UNAVAILABLE means the server needs npm ci (including optional native packages), followed by a server restart. IMAGE_DECODE_FAILED refers to the input file. IMAGE_TOO_LARGE refers to pixel dimensions. Other processing failures use IMAGE_PROCESSING_FAILED. The terminal logs the technical cause under the upload reference shown in the UI; image data and credentials are never logged.
 
 The home hero previews up to eight published, non-sold motorcycles with photos. It uses each unit’s cover photo, links directly to unit details, and rotates every six seconds. Hover temporarily pauses; keyboard focus pauses until Play is selected. Reduced-motion preference defaults to paused. A single unit displays without slideshow controls; the logo remains when no eligible units exist.
+
+## Deleting motorcycles
+
+Only admins can delete or restore units. Delete hides the listing from both the public showroom and active admin inventory, while preserving inquiries, photos, and activity records. Use Motorcycles → Deleted units → Restore to recover it. Restoration returns its previous publication/availability settings. Deleted listings cannot be edited or selected for new inquiries.

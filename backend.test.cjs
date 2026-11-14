@@ -305,3 +305,26 @@ test('missing image processor is reported as a server setup issue, not a corrupt
  }finally{h.close();}
  const healthy=await require('./compress.cjs').healthCheck();assert.equal(healthy.ok,true);assert.equal(healthy.diagnosticsVersion,2);
 });
+test('admin deletion hides units, preserves inquiries, and supports audited restoration',async()=>{
+ const h=harness(false,false,true),r=h.request,password='Delete workflow password';
+ try{
+  await r('setup','POST',{code:h.api.setupCode,name:'Owner',email:'owner@example.test',password});await h.login('owner@example.test',password);const owner=h.cookie;
+  const bike={name:'Recovery Ducati',brand:'Ducati',type:'Sport',price:1695000,status:'available',publication:'published',year:null,mileage:null};
+  const created=await r('bikes','POST',bike);assert.equal(created.status,201);const id=created.data.id;
+  h.cookie='';assert.equal((await r('bikes/'+id,'DELETE',{confirmName:bike.name})).status,401);
+  await r('register','POST',{name:'Customer',email:'customer@example.test',password,consent:true});await h.login('customer@example.test',password);const customer=h.cookie;
+  const inquiry=await r('inquiries','POST',{name:'Customer',phone:'09273046604',kind:'unit',bikeId:id,message:'Interested in this motorcycle'});assert.equal(inquiry.status,201);
+  assert.equal((await r('bikes/'+id,'DELETE',{confirmName:bike.name})).status,403);
+  h.cookie=owner;assert.equal((await r('bikes/'+id,'DELETE',{confirmName:'wrong'})).status,400);
+  assert.equal((await r('bikes/'+id,'DELETE',{confirmName:bike.name})).status,200);
+  assert.equal((await r('bikes')).data.length,0);assert.equal((await r('admin/bikes')).data.length,0);assert.equal((await r('admin/deleted-bikes')).data[0].name,bike.name);
+  assert.equal((await r('bikes/'+id,'PUT',bike)).status,409);assert.equal((await r('bikes/'+id,'DELETE',{confirmName:bike.name})).status,409);
+  assert.equal((await r('activity')).data[0].action,'deleted');
+  h.cookie=customer;assert.equal((await r('inquiries/'+inquiry.data.id+'/messages')).status,200);
+  assert.equal((await r('inquiries','POST',{name:'Customer',phone:'09273046604',kind:'unit',bikeId:id,message:'Another inquiry'})).status,400);
+  assert.equal((await r('bikes/'+id+'/restore','POST',{})).status,403);
+  h.cookie=owner;h.restart();assert.equal((await r('admin/deleted-bikes')).data.length,1);
+  assert.equal((await r('bikes/'+id+'/restore','POST',{})).status,200);assert.equal((await r('bikes')).data[0].name,bike.name);assert.equal((await r('admin/deleted-bikes')).data.length,0);assert.equal((await r('activity')).data[0].action,'restored');
+  assert.equal((await r('bikes/'+id+'/restore','POST',{})).status,409);
+ }finally{h.close();}
+});
