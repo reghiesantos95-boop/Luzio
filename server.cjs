@@ -28,7 +28,7 @@ http.createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': types[path.extname(file)], 'X-Content-Type-Options': 'nosniff' });
     res.end(data);
   });
-}).listen(Number(process.env.PORT) || 4174, '127.0.0.1', () => {
+}).listen(Number(process.env.PORT) || 4174, process.env.HOST || '127.0.0.1', () => {
   api.startBackups();
   console.log('Luzio Garage Trading: http://127.0.0.1:' + (process.env.PORT || 4174));
   if (!api.hasAdmin()) console.log('Admin setup code (enter at /admin): ' + api.setupCode);
