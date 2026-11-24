@@ -84,3 +84,7 @@ The home hero previews up to eight published, non-sold motorcycles with photos. 
 ## Deleting motorcycles
 
 Only admins can delete or restore units. Delete hides the listing from both the public showroom and active admin inventory, while preserving inquiries, photos, and activity records. Use Motorcycles → Deleted units → Restore to recover it. Restoration returns its previous publication/availability settings. Deleted listings cannot be edited or selected for new inquiries.
+
+Client revision: the live server now runs as an admin-only showroom. Customer registration/login and staff access are disabled; existing records remain preserved. /account redirects to Contact. All new inquiries use the Luzio Facebook page: https://www.facebook.com/profile.php?id=100063721998692. Phone, SMS and Google Maps remain available in Contact. Account management and manual backup panels have been removed from the admin interface; automatic verified backups continue in the background. Previous website inquiries remain available to admins as history. The createApi adminOnly:false option is retained only for migration/regression coverage of historical data workflows.
+
+Password-only admin testing is enabled in development on localhost/private LAN when local testing is enabled and there is a single active admin. If multiple admins exist, set ADMIN_TEST_EMAIL locally to choose the testing account. Set ADMIN_PASSWORD_ONLY=false to opt out. The password is always required; production keeps email authentication/verification. Never commit .env or credentials.

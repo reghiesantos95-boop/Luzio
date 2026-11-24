@@ -17,11 +17,11 @@ http.createServer((req, res) => {
     return fs.readFile(file,(error,data)=>{if(error){res.writeHead(404);return res.end('Not found');}res.writeHead(200,{'Content-Type':route.endsWith('.png')?'image/png':route.endsWith('.webp')?'image/webp':'image/jpeg','X-Content-Type-Options':'nosniff'});res.end(data);});
   }
   if (route === '/admin') route = '/admin.html';
-  if (route === '/account') route = '/account.html';
+  if (route === '/account' || route === '/account.html') {res.writeHead(302,{'Location':'/#contact','Cache-Control':'no-store'});return res.end();}
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Cache-Control', 'no-store');
   const file = path.resolve(root, '.' + (route === '/' ? '/index.html' : route));
-  const allowed = ['index.html', 'styles.css', 'app.js', 'features.js', 'admin.html', 'admin.js', 'account.html', 'account.js', 'conversation-ui.js', path.join('assets', 'luzio-logo.png'), path.join('assets', 'ducati-panigale-v4s.png')];
+  const allowed = ['index.html', 'styles.css', 'app.js', 'features.js', 'admin.html', 'admin.js', 'conversation-ui.js', path.join('assets', 'luzio-logo.png'), path.join('assets', 'ducati-panigale-v4s.png')];
   if (!allowed.includes(path.relative(root, file))) { res.writeHead(404); return res.end('Not found'); }
   fs.readFile(file, (error, data) => {
     if (error) { res.writeHead(404); return res.end('Not found'); }

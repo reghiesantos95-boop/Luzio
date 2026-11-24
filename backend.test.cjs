@@ -6,13 +6,13 @@ const {scryptSync}=require('node:crypto');
 const {createApi}=require('./backend.cjs');
 function harness(configured=true, deliveryFailure=false, localAuthTesting=false,extraOptions={}){
  const directory=fs.mkdtempSync(path.join(os.tmpdir(),'luzio-test-')),sent=[];
- let api=createApi(directory,{...extraOptions,localAuthTesting,mail:{configured:()=>configured,send:async(email,token,purpose)=>{if(deliveryFailure)throw Error('SMTP unavailable');sent.push({email,token,purpose});}}}),cookie='';
- async function request(route,method='GET',body,headers={}){
-  const req=Readable.from(body===undefined?[]:[JSON.stringify(body)]);Object.assign(req,{method,headers:{host:'localhost','content-type':'application/json',cookie,...headers},socket:{remoteAddress:'127.0.0.1'}});
+ let api=createApi(directory,{adminOnly:false,...extraOptions,localAuthTesting,mail:{configured:()=>configured,send:async(email,token,purpose)=>{if(deliveryFailure)throw Error('SMTP unavailable');sent.push({email,token,purpose});}}}),cookie='';
+ async function request(route,method='GET',body,headers={},remoteAddress='127.0.0.1'){
+  const req=Readable.from(body===undefined?[]:[JSON.stringify(body)]);Object.assign(req,{method,headers:{host:'localhost','content-type':'application/json',cookie,...headers},socket:{remoteAddress}});
   const res={headers:{},setHeader(k,v){this.headers[k]=v;},writeHead(status,h){this.status=status;Object.assign(this.headers,h);},end(data){this.data=JSON.parse(data);}};
   await api(req,res,'/api/'+route);return res;
  }
- return {directory,sent,request,get api(){return api;},get cookie(){return cookie;},set cookie(v){cookie=v;},async login(email,password){const r=await request('login','POST',{email,password});if(r.status===200)cookie=r.headers['Set-Cookie'].split(';')[0];return r;},restart(){api.close();api=createApi(directory,{...extraOptions,localAuthTesting,mail:{configured:()=>configured,send:async(email,token,purpose)=>sent.push({email,token,purpose})}});},close(){api.close();assert.equal(path.dirname(path.resolve(directory)),path.resolve(os.tmpdir()));assert.ok(path.basename(directory).startsWith('luzio-test-'));fs.rmSync(directory,{recursive:true,force:true});}};
+ return {directory,sent,request,get api(){return api;},get cookie(){return cookie;},set cookie(v){cookie=v;},async login(email,password){const r=await request('login','POST',{email,password});if(r.status===200)cookie=r.headers['Set-Cookie'].split(';')[0];return r;},restart(){api.close();api=createApi(directory,{adminOnly:false,...extraOptions,localAuthTesting,mail:{configured:()=>configured,send:async(email,token,purpose)=>sent.push({email,token,purpose})}});},close(){api.close();assert.equal(path.dirname(path.resolve(directory)),path.resolve(os.tmpdir()));assert.ok(path.basename(directory).startsWith('luzio-test-'));fs.rmSync(directory,{recursive:true,force:true});}};
 }
 test('email setup, verification, role boundaries, invitations, resets, inventory and persistence',async()=>{
  const h=harness(),r=h.request,password='Long password for testing';
@@ -251,12 +251,12 @@ test('fresh clone defaults to local testing without .env; production and explici
  async function request(route,body){const req=Readable.from(body?[JSON.stringify(body)]:[]);Object.assign(req,{method:body?'POST':'GET',headers:{host:'localhost:4174','content-type':'application/json'},socket:{remoteAddress:'127.0.0.1'}});const res={setHeader(){},writeHead(status){this.status=status;},end(raw){this.data=JSON.parse(raw);}};await api(req,res,'/api/'+route);return res;}
  try{
   delete process.env.NODE_ENV;delete process.env.LOCAL_AUTH_TEST;
-  api=createApi(directory,{mail:{configured:()=>false,send:async()=>{throw Error('Email must not be used');}}});
+  api=createApi(directory,{adminOnly:false,mail:{configured:()=>false,send:async()=>{throw Error('Email must not be used');}}});
   assert.equal((await request('session')).data.localTesting,true);
   assert.equal((await request('setup',{code:api.setupCode,name:'Fresh Owner',email:'fresh@example.test',password:'Fresh clone password'})).status,201);
   assert.equal((await request('register',{name:'Fresh Customer',email:'customer@example.test',password:'Fresh clone password',consent:true})).status,201);
-  api.close();process.env.LOCAL_AUTH_TEST='false';api=createApi(directory,{mail:{configured:()=>false}});assert.equal((await request('session')).data.localTesting,false);api.close();
-  process.env.LOCAL_AUTH_TEST='true';process.env.NODE_ENV='production';api=createApi(directory,{mail:{configured:()=>false}});assert.equal((await request('session')).data.localTesting,false);
+  api.close();process.env.LOCAL_AUTH_TEST='false';api=createApi(directory,{adminOnly:false,mail:{configured:()=>false}});assert.equal((await request('session')).data.localTesting,false);api.close();
+  process.env.LOCAL_AUTH_TEST='true';process.env.NODE_ENV='production';api=createApi(directory,{adminOnly:false,mail:{configured:()=>false}});assert.equal((await request('session')).data.localTesting,false);
   assert.equal((await request('register',{name:'Production Customer',email:'production@example.test',password:'Fresh clone password',consent:true})).status,503);
  }finally{api?.close();if(oldMode===undefined)delete process.env.NODE_ENV;else process.env.NODE_ENV=oldMode;if(oldFlag===undefined)delete process.env.LOCAL_AUTH_TEST;else process.env.LOCAL_AUTH_TEST=oldFlag;assert.equal(path.dirname(path.resolve(directory)),path.resolve(os.tmpdir()));assert.ok(path.basename(directory).startsWith('luzio-test-'));fs.rmSync(directory,{recursive:true,force:true});}
 });
@@ -327,4 +327,38 @@ test('admin deletion hides units, preserves inquiries, and supports audited rest
   assert.equal((await r('bikes/'+id+'/restore','POST',{})).status,200);assert.equal((await r('bikes')).data[0].name,bike.name);assert.equal((await r('admin/deleted-bikes')).data.length,0);assert.equal((await r('activity')).data[0].action,'restored');
   assert.equal((await r('bikes/'+id+'/restore','POST',{})).status,409);
  }finally{h.close();}
+});
+
+test('admin-only showroom disables customers, staff and new website inquiries while keeping backups',async()=>{
+ const options={adminOnly:false},h=harness(false,false,true,options),r=h.request,password='Admin only revision password';
+ try{
+  await r('setup','POST',{code:h.api.setupCode,name:'Owner',email:'owner@example.test',password});await h.login('owner@example.test',password);const owner=h.cookie;
+  await r('register','POST',{name:'Customer',email:'client@example.test',password,consent:true});await h.login('client@example.test',password);const customer=h.cookie;
+  const db=new DatabaseSync(path.join(h.directory,'luzio.sqlite'));db.prepare("INSERT INTO users(name,email,salt,hash,role,verified) SELECT 'Staff','staff@example.test',salt,hash,'staff',1 FROM users WHERE role='admin' LIMIT 1").run();db.close();
+  await h.login('staff@example.test',password);const staff=h.cookie;
+  options.adminOnly=true;h.restart();
+  h.cookie=customer;assert.equal((await r('session')).data.authenticated,false);assert.equal((await r('admin/bikes')).status,401);
+  h.cookie=staff;assert.equal((await r('session')).data.authenticated,false);assert.equal((await r('admin/bikes')).status,401);
+  assert.equal((await h.login('client@example.test',password)).status,401);assert.equal((await h.login('staff@example.test',password)).status,401);
+  assert.equal((await r('register','POST',{})).status,410);assert.equal((await r('inquiries','POST',{})).status,410);
+  h.cookie=owner;assert.equal((await r('admin/bikes')).status,200);assert.equal((await r('users')).status,410);assert.equal((await r('users','POST',{role:'staff'})).status,410);
+  assert.equal((await r('backups')).status,200);assert.equal((await r('bikes')).status,200);
+  assert.equal((await h.login('owner@example.test',password)).status,200);
+ }finally{h.close();}
+});
+
+test('password-only admin testing requires a valid password and private peer, with production and opt-out guards',async()=>{
+ const saved={mode:process.env.NODE_ENV,email:process.env.ADMIN_TEST_EMAIL,flag:process.env.ADMIN_PASSWORD_ONLY};
+ delete process.env.NODE_ENV;delete process.env.ADMIN_TEST_EMAIL;delete process.env.ADMIN_PASSWORD_ONLY;
+ const h=harness(false,false,true,{adminOnly:true}),r=h.request,password='Private admin test password';
+ try{
+  await r('setup','POST',{code:h.api.setupCode,name:'Owner',email:'owner@example.test',password});
+  assert.equal((await r('session')).data.passwordOnlyAdmin,true);
+  assert.equal((await r('login','POST',{password:'wrong'})).status,401);
+  assert.equal((await r('login','POST',{password})).status,200);
+  assert.equal((await r('login','POST',{password},{host:'192.168.1.62:4174'},'192.168.1.20')).status,200);
+  assert.equal((await r('login','POST',{password},{host:'example.test'},'203.0.113.20')).status,401);
+  process.env.ADMIN_PASSWORD_ONLY='false';assert.equal((await r('session')).data.passwordOnlyAdmin,false);assert.equal((await r('login','POST',{password})).status,401);
+  process.env.ADMIN_PASSWORD_ONLY='true';process.env.NODE_ENV='production';assert.equal((await r('session')).data.passwordOnlyAdmin,false);assert.equal((await r('login','POST',{password})).status,401);assert.equal((await h.login('owner@example.test',password)).status,200);
+ }finally{h.close();for(const [key,value] of [['NODE_ENV',saved.mode],['ADMIN_TEST_EMAIL',saved.email],['ADMIN_PASSWORD_ONLY',saved.flag]]){if(value===undefined)delete process.env[key];else process.env[key]=value;}}
 });

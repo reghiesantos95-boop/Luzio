@@ -21,7 +21,7 @@ function createApi(directory, options={}){
   if(!attempts.has(key))attempts.set(key,{count:0,expires:now+900000});
   if(++attempts.get(key).count>max)fail('Too many attempts. Try again in 15 minutes.',429);
  }
- const accounts=require('./accounts.cjs').createAccounts(db,{reply,fail,limit,setupCode,mail:options.mail||require('./mail.cjs'),localAuthTesting:options.localAuthTesting??(process.env.LOCAL_AUTH_TEST===undefined?process.env.NODE_ENV!=='production':process.env.LOCAL_AUTH_TEST==='true')});
+ const accounts=require('./accounts.cjs').createAccounts(db,{reply,fail,limit,setupCode,adminOnly:options.adminOnly??true,mail:options.mail||require('./mail.cjs'),localAuthTesting:options.localAuthTesting??(process.env.LOCAL_AUTH_TEST===undefined?process.env.NODE_ENV!=='production':process.env.LOCAL_AUTH_TEST==='true')});
  const conversations=require('./conversations.cjs').createConversations(db,{fail,reply,limit});
  const backups=require('./backup.cjs').createBackups(db,directory);
  const imageProcessor=options.imageProcessor||require('./compress.cjs');
@@ -42,6 +42,7 @@ function createApi(directory, options={}){
    if(route==='/api/backups'){if(!authenticated)fail('Please log in.',401);if(account.role!=='admin')fail('Only admins can manage backups.',403);if(req.method==='GET')return reply(res,200,backups.status());if(req.method==='POST'){limit(req,'manual-backup',5);await backups.run();return reply(res,201,backups.status());}}
    if(route==='/api/bikes'&&req.method==='GET')return reply(res,200,db.prepare("SELECT * FROM bikes WHERE COALESCE(json_extract(data,'$.publication'),'published')='published' AND json_extract(data,'$.deletedAt') IS NULL ORDER BY id DESC").all().map(r=>({...JSON.parse(r.data),publication:JSON.parse(r.data).publication||'published',id:r.id})));
    if(route==='/api/inquiries'&&req.method==='POST'){
+    if(options.adminOnly!==false)fail('Please send new inquiries to Luzio Garage Trading on Facebook.',410);
     limit(req,'inquiry',20);const name=text(body.name,100),phone=text(body.phone,30),message=text(body.message,2000),kind=text(body.kind,30);
     if(name.length<2||!/^[+\d ()-]{7,30}$/.test(phone)||message.length<5||!['general','unit','financing'].includes(kind))fail('Enter your name, valid phone number, and a message of at least 5 characters.');
     let bikeId=null;if(body.bikeId!=null&&body.bikeId!==''){bikeId=Number(body.bikeId);if(!Number.isSafeInteger(bikeId)||!db.prepare("SELECT id FROM bikes WHERE id=? AND COALESCE(json_extract(data,'$.publication'),'published')='published' AND json_extract(data,'$.deletedAt') IS NULL").get(bikeId))fail('This unit is no longer listed. Refresh and try again.');}

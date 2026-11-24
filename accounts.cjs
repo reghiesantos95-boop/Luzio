@@ -1,5 +1,5 @@
 const { randomBytes, createHash, scryptSync, timingSafeEqual } = require('node:crypto');
-function createAccounts(db, {reply, fail, limit, setupCode, mail, localAuthTesting=false}) {
+function createAccounts(db, {reply, fail, limit, setupCode, mail, localAuthTesting=false,adminOnly=false}) {
   db.exec(`CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY,name TEXT NOT NULL,email TEXT UNIQUE COLLATE NOCASE,salt TEXT NOT NULL,hash TEXT NOT NULL,role TEXT NOT NULL CHECK(role IN ('admin','staff','client')),verified INTEGER NOT NULL DEFAULT 0,active INTEGER NOT NULL DEFAULT 1);
     CREATE TABLE IF NOT EXISTS account_sessions(token TEXT PRIMARY KEY,user_id INTEGER NOT NULL,expires INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS account_tokens(hash TEXT PRIMARY KEY,user_id INTEGER NOT NULL,purpose TEXT NOT NULL,expires INTEGER NOT NULL);
@@ -19,6 +19,15 @@ function createAccounts(db, {reply, fail, limit, setupCode, mail, localAuthTesti
     } catch(e) { db.exec('ROLLBACK'); throw e; }
   }
   const localTesting = req => localAuthTesting && process.env.NODE_ENV!=='production' && !!req && ['127.0.0.1','::1','::ffff:127.0.0.1'].includes(req.socket.remoteAddress) && /^(localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$/.test(req.headers.host||'');
+  // Password-only testing is confined to local/private peers and never production.
+  function testAdmin(req){
+    const ip=(req?.socket?.remoteAddress||'').replace(/^::ffff:/,'');
+    if(!localAuthTesting||process.env.NODE_ENV==='production'||process.env.ADMIN_PASSWORD_ONLY==='false'||!(ip==='::1'||/^127\./.test(ip)||/^10\./.test(ip)||/^192\.168\./.test(ip)||/^172\.(1[6-9]|2[0-9]|3[01])\./.test(ip)))return;
+    const email=(process.env.ADMIN_TEST_EMAIL||'').trim().toLowerCase();
+    if(email)return db.prepare("SELECT * FROM users WHERE email=? AND role='admin' AND active=1").get(email);
+    const admins=db.prepare("SELECT * FROM users WHERE role='admin' AND active=1").all();
+    if(admins.length===1)return admins[0];
+  }
   const hasAdmin = () => !!db.prepare("SELECT id FROM users WHERE role='admin'").get();
   const digest = value => createHash('sha256').update(value).digest('hex');
   const clean = (value,max=100) => typeof value==='string' ? value.trim().slice(0,max) : '';
@@ -30,7 +39,8 @@ function createAccounts(db, {reply, fail, limit, setupCode, mail, localAuthTesti
   function user(req) {
     db.prepare('DELETE FROM account_sessions WHERE expires < ?').run(Date.now());
     const account = db.prepare('SELECT u.* FROM users u JOIN account_sessions s ON s.user_id=u.id WHERE s.token=? AND u.active=1').get(digest(cookieToken(req)||''));
-    if(account && localTesting(req)) account.verified=1;
+    if(account&&adminOnly&&account.role!=='admin')return;
+    if(account && (localTesting(req)||testAdmin(req)?.id===account.id)) account.verified=1;
     return account;
   }
   function requireUser(req, admin=false, verified=true) {const u=user(req);if(!u)fail('Please log in.',401);if(verified&&!u.verified)fail('Verify your email first.',403);if(admin&&u.role!=='admin')fail('Only administrators can manage accounts.',403);return u;}
@@ -49,7 +59,8 @@ function createAccounts(db, {reply, fail, limit, setupCode, mail, localAuthTesti
     if(!row||row.expires<Date.now()||!row.active)fail('Invalid or expired link.');return row;
   }
   async function handle(req,res,route,body) {
-    if(route==='/api/session'&&req.method==='GET') {const u=user(req);reply(res,200,{authenticated:!!u,needsSetup:!hasAdmin(),legacyAccess:!!db.prepare('SELECT id FROM users WHERE email IS NULL').get(),emailConfigured:mail.configured(),localTesting:!!localTesting(req),user:u?publicUser(u):null});return true;}
+    if(adminOnly&&(route==='/api/register'||route==='/api/accept-invite'||/^\/api\/users(?:\/|$)/.test(route)))fail('Customer and staff accounts are no longer available. Contact Luzio on Facebook.',410);
+    if(route==='/api/session'&&req.method==='GET') {const u=user(req);reply(res,200,{authenticated:!!u,needsSetup:!hasAdmin(),legacyAccess:!!db.prepare('SELECT id FROM users WHERE email IS NULL').get(),emailConfigured:mail.configured(),localTesting:!!localTesting(req),passwordOnlyAdmin:!!testAdmin(req),user:u?publicUser(u):null});return true;}
     if(route==='/api/setup'&&req.method==='POST') {
       limit(req,'setup',10);if(hasAdmin())fail('Admin already configured.',409);if(body.code!==setupCode)fail('Invalid setup code.',403);mailReady(req,true);
       const email=emailValue(body.email),name=clean(body.name),password=passwordHash(body.password);if(name.length<2)fail('Enter your name.');
@@ -67,10 +78,10 @@ function createAccounts(db, {reply, fail, limit, setupCode, mail, localAuthTesti
     }
     if(route==='/api/login'&&req.method==='POST') {
       limit(req,'login',10);const email=clean(body.email,254).toLowerCase();
-      const u=email?db.prepare('SELECT * FROM users WHERE email=?').get(email):db.prepare('SELECT * FROM users WHERE email IS NULL').get();
+      const u=email?db.prepare('SELECT * FROM users WHERE email=?').get(email):testAdmin(req)||db.prepare('SELECT * FROM users WHERE email IS NULL').get();
       // Use a real scrypt calculation even when the account is unknown.
       const candidate=u||{salt:'unknown-account',hash:'00'.repeat(64)};
-      if(!matches(candidate,body.password)||!u||!u.active)fail('Incorrect email or password.',401);
+      if(!matches(candidate,body.password)||!u||!u.active||(adminOnly&&u.role!=='admin'))fail('Incorrect email or password.',401);
       const token=randomBytes(32).toString('hex');db.prepare('INSERT INTO account_sessions VALUES(?,?,?)').run(digest(token),u.id,Date.now()+28800000);
       res.setHeader('Set-Cookie',`luzio_session=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=28800${process.env.COOKIE_SECURE==='true'?'; Secure':''}`);
       reply(res,200,{ok:true});return true;
