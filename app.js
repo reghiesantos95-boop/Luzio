@@ -25,7 +25,7 @@ pageMotion.addEventListener('change', () => {
 });
 function renderPage(moveToPage = true) {
   const route = location.hash.slice(1).split('?')[0] || 'home';
-  const page = route === 'inquiry' ? 'contact' : route === 'main' ? currentPage : ['home','inventory','financing','contact'].includes(route) ? route : 'home';
+  const page = route === 'inquiry' || route === 'financing' ? 'contact' : route === 'main' ? currentPage : ['home','inventory','contact'].includes(route) ? route : 'home';
   const previousPage = currentPage;
   currentPage = page;
   pageAnimation?.cancel();
@@ -39,7 +39,7 @@ function renderPage(moveToPage = true) {
     if (active) link.setAttribute('aria-current', 'page');
     else link.removeAttribute('aria-current');
   });
-  const names = {home:'Home',inventory:'Inventory',financing:'Financing',contact:'Contact'};
+  const names = {home:'Home',inventory:'Inventory',contact:'Contact'};
   document.title = names[page] + ' | Luzio Garage Trading';
   closeMenu();
   if (moveToPage) {
@@ -49,7 +49,7 @@ function renderPage(moveToPage = true) {
     if (heading) { heading.tabIndex = -1; heading.focus({preventScroll:true}); }
   }
   if (moveToPage && page !== previousPage && !pageMotion.matches) {
-    const order = ['home','inventory','financing','contact'];
+    const order = ['home','inventory','contact'];
     const direction = order.indexOf(page) > order.indexOf(previousPage) ? 1 : -1;
     pageAnimation = document.querySelector('main').animate([
       {opacity:0,transform:`translateX(${direction * 36}px)`},

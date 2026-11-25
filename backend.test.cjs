@@ -362,3 +362,122 @@ test('password-only admin testing requires a valid password and private peer, wi
   process.env.ADMIN_PASSWORD_ONLY='true';process.env.NODE_ENV='production';assert.equal((await r('session')).data.passwordOnlyAdmin,false);assert.equal((await r('login','POST',{password})).status,401);assert.equal((await h.login('owner@example.test',password)).status,200);
  }finally{h.close();for(const [key,value] of [['NODE_ENV',saved.mode],['ADMIN_TEST_EMAIL',saved.email],['ADMIN_PASSWORD_ONLY',saved.flag]]){if(value===undefined)delete process.env[key];else process.env[key]=value;}}
 });
+
+test('admin email management lists only admins and supports one-time local activation without staff access',async()=>{
+ const h=harness(false,false,true,{adminOnly:true}),r=h.request,password='Admin email management password';
+ try{
+  assert.equal((await r('admin-accounts')).status,401);
+  await r('setup','POST',{code:h.api.setupCode,name:'Owner',email:'owner@example.test',password});await h.login('owner@example.test',password);const owner=h.cookie;
+  assert.equal((await r('admin-accounts')).data.length,1);
+  assert.equal((await r('admin-accounts','POST',{name:'Staff',email:'staff@example.test',role:'staff'})).status,400);
+  const added=await r('admin-accounts','POST',{name:'Second Admin',email:'second@example.test'});assert.equal(added.status,201);assert.match(added.data.activationPath,/^\/admin#invite\?token=[a-f0-9]{64}$/);
+  const list=(await r('admin-accounts')).data;assert.equal(list.length,2);assert.ok(list.every(a=>a.role==='admin'));assert.equal(list.find(a=>a.email==='second@example.test').pending,true);assert.ok(!('hash' in list[0]));
+  assert.equal((await r('admin-accounts','POST',{name:'Duplicate',email:'second@example.test'})).status,409);
+  const token=added.data.activationPath.split('token=')[1];h.cookie='';assert.equal((await r('accept-invite','POST',{token,password})).status,200);assert.equal((await r('accept-invite','POST',{token,password})).status,400);
+  assert.equal((await h.login('second@example.test',password)).status,200);assert.equal((await r('admin/bikes')).status,200);
+  h.cookie=owner;assert.equal((await r('admin-accounts')).data.find(a=>a.email==='second@example.test').pending,false);
+ }finally{h.close();}
+});
+
+test('admin invitations use email delivery outside local testing',async()=>{
+ const h=harness(true,false,false,{adminOnly:true}),r=h.request,password='Delivered admin invitation password';
+ try{
+  await r('setup','POST',{code:h.api.setupCode,name:'Owner',email:'owner@example.test',password});await r('verify','POST',{token:h.sent.at(-1).token});await h.login('owner@example.test',password);
+  const added=await r('admin-accounts','POST',{name:'Invited Admin',email:'invite@example.test'});assert.equal(added.status,201);assert.equal(added.data.activationPath,undefined);assert.equal(h.sent.at(-1).email,'invite@example.test');assert.equal(h.sent.at(-1).purpose,'invite');
+  assert.equal((await r('accept-invite','POST',{token:h.sent.at(-1).token,password})).status,200);assert.equal((await h.login('invite@example.test',password)).status,200);
+ }finally{h.close();}
+});
+
+test('draft login code gates sessions, survives restart, rejects reuse and limits guesses',async()=>{
+ const h=harness(true,false,false,{loginEmailVerification:true}),r=h.request,password='Long password for testing',email='otp@example.test';
+ try{
+  assert.equal((await r('setup','POST',{code:h.api.setupCode,name:'OTP Owner',email,password})).status,201);
+  const login=await h.login(email,password);assert.equal(login.status,202);assert.equal(login.data.verificationRequired,true);
+  assert.ok(!JSON.stringify(login.data).includes(h.sent.at(-1).token));
+  h.cookie=login.headers['Set-Cookie'].split(';')[0];const code=h.sent.at(-1).token;assert.match(code,/^\d{6}$/);
+  assert.equal((await r('session')).data.authenticated,false);
+  assert.equal((await r('admin/bikes')).status,401);
+  assert.equal((await h.login(email,password)).status,429);
+  assert.equal((await r('login/verify','POST',{code:'bad'})).status,400);
+  h.restart();const verified=await r('login/verify','POST',{code});assert.equal(verified.status,200);
+  assert.equal((await r('login/verify','POST',{code})).status,400);
+  h.cookie=verified.headers['Set-Cookie'][0].split(';')[0];assert.equal((await r('session')).data.authenticated,true);
+  await r('logout','POST',{});const next=await h.login(email,password);h.cookie=next.headers['Set-Cookie'].split(';')[0];
+  const actual=h.sent.at(-1).token,wrong=actual==='000000'?'000001':'000000';
+  for(let i=0;i<5;i++)assert.equal((await r('login/verify','POST',{code:wrong})).status,400);
+  assert.equal((await r('login/verify','POST',{code:actual})).status,400);
+ }finally{h.close();}
+});
+
+test('draft login code fails closed without SMTP and rejects expired challenges',async()=>{
+ const h=harness(false,false,true,{loginEmailVerification:true}),r=h.request,password='Long password for testing',email='otp@example.test';
+ try{
+  assert.equal((await r('setup','POST',{code:h.api.setupCode,name:'OTP Owner',email,password})).status,201);
+  assert.equal((await h.login(email,password)).status,503);
+  assert.equal((await r('session')).data.authenticated,false);
+  assert.equal((await r('session')).data.passwordOnlyAdmin,false);
+ }finally{h.close();}
+ const g=harness(true,false,false,{loginEmailVerification:true});
+ try{
+  await g.request('setup','POST',{code:g.api.setupCode,name:'OTP Owner',email,password});const login=await g.login(email,password);
+  g.cookie=login.headers['Set-Cookie'].split(';')[0];
+  const db=new DatabaseSync(path.join(g.directory,'luzio.sqlite'));db.exec('UPDATE login_challenges SET expires=0');db.close();
+  assert.equal((await g.request('login/verify','POST',{code:g.sent.at(-1).token})).status,400);
+ }finally{g.close();}
+});
+
+test('email-password local LAN login works without SMTP when password-only UI is disabled',async()=>{
+ const old=process.env.ADMIN_PASSWORD_ONLY,chosen=process.env.ADMIN_TEST_EMAIL;process.env.ADMIN_PASSWORD_ONLY='false';process.env.ADMIN_TEST_EMAIL='lan@example.test';
+ const h=harness(false,false,true,{adminOnly:true}),password='Long password for testing';
+ try{
+  await h.request('setup','POST',{code:h.api.setupCode,name:'LAN Admin',email:'lan@example.test',password});
+  const login=await h.request('login','POST',{email:'lan@example.test',password},{host:'192.168.1.62:4174'},'192.168.1.10');assert.equal(login.status,200);h.cookie=login.headers['Set-Cookie'].split(';')[0];
+  const session=await h.request('session','GET',undefined,{host:'192.168.1.62:4174'},'192.168.1.10');assert.equal(session.data.passwordOnlyAdmin,false);assert.equal(session.data.user.verified,true);
+  assert.equal((await h.request('session','GET',undefined,{host:'public.example'},'8.8.8.8')).data.user.verified,false);
+ }finally{h.close();if(old===undefined)delete process.env.ADMIN_PASSWORD_ONLY;else process.env.ADMIN_PASSWORD_ONLY=old;if(chosen===undefined)delete process.env.ADMIN_TEST_EMAIL;else process.env.ADMIN_TEST_EMAIL=chosen;}
+});
+
+test('Super Admin controls devices and access; ordinary admins cannot manage accounts; recovery is one-use',async()=>{
+ const h=harness(true,false,true,{adminOnly:true}),r=h.request,password='Long password for testing',email='super@example.test';
+ try{
+  await r('setup','POST',{code:h.api.setupCode,name:'Super Owner',email,password});await h.login(email,password);const owner=h.cookie;
+  assert.equal((await r('session')).data.user.superAdmin,true);
+  const invitation=await r('admin-accounts','POST',{name:'Client Admin',email:'clientadmin@example.test'});assert.equal(invitation.status,201);
+  const token=new URLSearchParams(invitation.data.activationPath.split('?')[1]).get('token');await r('accept-invite','POST',{token,password});
+  const accounts=(await r('security/accounts')).data,target=accounts.find(u=>u.email==='clientadmin@example.test');
+  const first=await r('login','POST',{email:target.email,password},{'user-agent':'Mozilla/5.0 (Windows NT 10.0) Chrome/140.0'});const firstCookie=first.headers['Set-Cookie'].split(';')[0];
+  const second=await r('login','POST',{email:target.email,password},{'user-agent':'Mozilla/5.0 (iPhone) Safari/605.1'});const secondCookie=second.headers['Set-Cookie'].split(';')[0];
+  h.cookie=firstCookie;assert.equal((await r('security/devices')).status,403);assert.equal((await r('security/accounts')).status,403);assert.equal((await r('admin-accounts')).status,403);assert.equal((await r('admin-accounts','POST',{name:'Attack Admin',email:'attack@example.test'})).status,403);
+  assert.equal((await r('security/accounts','PATCH',{userId:target.id,active:true,superAdmin:true,password})).status,403);
+  h.cookie=owner;let devices=(await r('security/devices')).data;assert.ok(devices.some(d=>d.current));assert.ok(devices.some(d=>d.device==='Chrome / Windows'));assert.ok(devices.some(d=>d.device==='Safari / iOS'));assert.ok(devices.every(d=>'id' in d&&!firstCookie.includes(d.id)));
+  const device=devices.find(d=>d.userId===target.id&&d.device==='Chrome / Windows');
+  assert.equal((await r('security/revoke','POST',{deviceId:device.id,password:'wrong'})).status,403);
+  assert.equal((await r('security/revoke','POST',{deviceId:device.id,password})).status,200);
+  h.cookie=firstCookie;assert.equal((await r('session')).data.authenticated,false);h.cookie=secondCookie;assert.equal((await r('session')).data.authenticated,true);
+  h.cookie=owner;assert.equal((await r('security/accounts','PATCH',{userId:target.id,active:false,superAdmin:false,password})).status,200);
+  h.cookie=secondCookie;assert.equal((await r('session')).data.authenticated,false);assert.equal((await h.login(target.email,password)).status,401);
+  h.cookie=owner;assert.equal((await r('security/accounts','PATCH',{userId:target.id,active:true,superAdmin:true,password})).status,200);
+  assert.equal((await r('security/accounts','PATCH',{userId:accounts.find(u=>u.email===email).id,active:false,superAdmin:false,password})).status,400);
+  await h.login(target.email,password);assert.equal((await r('session')).data.user.superAdmin,true);
+  const codes=(await r('security/recovery-codes','POST',{password})).data.codes;assert.equal(codes.length,8);const newPassword='Changed recovery password';
+  h.cookie='';assert.equal((await r('security/recover','POST',{email:target.email,code:codes[0],newPassword})).status,200);
+  h.cookie=secondCookie;assert.equal((await r('session')).data.authenticated,false);
+  assert.equal((await r('security/recover','POST',{email:target.email,code:codes[0],newPassword})).status,400);
+  assert.equal((await h.login(target.email,password)).status,401);assert.equal((await h.login(target.email,newPassword)).status,200);
+  const events=(await r('security/events')).data;assert.ok(events.some(e=>e.action==='disabled account'));assert.ok(events.some(e=>e.action==='recovered account and revoked all sessions'));
+  h.restart();assert.equal((await r('session')).data.user.superAdmin,true);
+ }finally{h.close();}
+});
+
+test('Super Admin invitations select access level and require current password for elevated access',async()=>{
+ const h=harness(true,false,true,{adminOnly:true}),r=h.request,password='Long password for testing';
+ try{
+  await r('setup','POST',{code:h.api.setupCode,name:'Owner',email:'owner@example.test',password});await h.login('owner@example.test',password);
+  assert.equal((await r('admin-accounts','POST',{name:'New Super',email:'new@example.test',role:'super_admin'})).status,403);
+  assert.equal((await r('admin-accounts','POST',{name:'New Super',email:'new@example.test',role:'super_admin',password:'incorrect'})).status,403);
+  const invited=await r('admin-accounts','POST',{name:'New Super',email:'new@example.test',role:'super_admin',password});assert.equal(invited.status,201);
+  assert.equal((await r('admin-accounts')).data.find(u=>u.email==='new@example.test').accessLevel,'super_admin');
+  const token=new URLSearchParams(invited.data.activationPath.split('?')[1]).get('token');assert.equal((await r('accept-invite','POST',{token,password})).status,200);
+  await h.login('new@example.test',password);assert.equal((await r('session')).data.user.superAdmin,true);
+ }finally{h.close();}
+});
